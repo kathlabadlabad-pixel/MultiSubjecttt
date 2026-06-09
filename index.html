@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mind & Motion Academy</title>
+    
+    <!-- Tailwind CSS for rapid, responsive UI styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- TensorFlow.js and Pose Detection for AI Webcam Tracking (P.E. Mechanic) -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection"></script>
+
+    <!-- FontAwesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;700;900&display=swap');
+        
+        body {
+            font-family: 'Outfit', sans-serif;
+            background-color: #0f172a; /* Tailwind slate-900 */
+            margin: 0;
+            overflow: hidden;
+            color: white;
+            user-select: none;
+        }
+
+        /* Video element is hidden, we draw onto the canvas to allow overlays */
+        #webcam {
+            display: none;
+        }
+
+        /* Canvas mirrors the user's movement for natural interaction */
+        #game-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            object-fit: cover;
+            transform: scaleX(-1); /* Mirror effect */
+            z-index: 1;
+            opacity: 0.4; /* Dim webcam feed to make text readable */
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+            pointer-events: none; /* Let clicks pass through if needed */
+        }
+
+        .glass-panel {
+            background: rgba(15, 23, 42, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
+        }
+
+        .zone-bar {
+            transition: height 0.1s linear;
+        }
+
+        .subject-badge-pe { background-color: #ef4444; }
+        .subject-badge-cs { background-color: #3b82f6; }
+        .subject-badge-en { background-color: #10b981; }
+
+        /* Animations */
+        @keyframes pulse-glow {
+            0%, 100% { box-shadow: 0 0 15px rgba(255,255,255,0.2); }
+            50% { box-shadow: 0 0 30px rgba(255,255,255,0.6); }
+        }
+        
+        .interactive-btn {
+            pointer-events: auto;
+            transition: all 0.2s;
+        }
+        .interactive-btn:hover {
+            transform: scale(1.05);
+            filter: brightness(1.2);
+        }
+        
+        /* Progress Fill Animation */
+        .fill-overlay {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            background: rgba(255, 255, 255, 0.3);
+            z-index: -1;
+            transition: height 0.1s;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Hidden Video Element for AI Processing -->
+    <video id="webcam" autoplay playsinline muted></video>
+
+    <!-- Canvas for rendering webcam + player tracker -->
+    <canvas id="game-canvas"></canvas>
+
+    <!-- Main UI Layer -->
+    <div id="ui-layer" class="flex flex-col justify-between h-full w-full relative">
+        
+        <!-- Header: Stats -->
+        <div class="flex justify-between items-center p-6 w-full max-w-6xl mx-auto">
+            <div class="glass-panel px-6 py-3 rounded-full text-2xl font-bold flex items-center gap-3">
+                <i class="fa-solid fa-star text-yellow-400"></i>
+                <span id="score-display">0</span>
+            </div>
+            <div id="subject-indicator" class="glass-panel px-6 py-3 rounded-full text-xl font-bold tracking-wider hidden">
+                SUBJECT
+            </div>
+            <div class="glass-panel px-6 py-3 rounded-full text-2xl font-bold flex items-center gap-3">
+                <i class="fa-solid fa-heart text-red-500"></i>
+                <span id="lives-display">3</span>
+            </div>
+        </div>
+
+        <!-- Middle: Question Area -->
+        <div id="question-container" class="hidden flex-col items-center justify-center w-full max-w-4xl mx-auto text-center px-4">
+            <div class="glass-panel p-8 rounded-3xl w-full border-b-4 border-indigo-500">
+                <h2 id="question-text" class="text-4xl md:text-5xl font-black drop-shadow-lg leading-tight">
+                    Loading Question...
+                </h2>
+            </div>
+        </div>
+
+        <!-- Bottom: Answer Zones -->
+        <div id="answer-zones" class="hidden flex justify-between items-end w-full px-8 pb-8 h-64 gap-8">
+            <!-- Left Zone -->
+            <div class="relative w-1/3 h-full glass-panel rounded-2xl border-l-8 border-rose-500 flex flex-col justify-center items-center overflow-hidden">
+                <div id="left-fill" class="fill-overlay border-rose-500" style="height: 0%; background: rgba(244, 63, 94, 0.3);"></div>
+                <div class="text-rose-400 font-bold mb-2 uppercase tracking-widest"><i class="fa-solid fa-arrow-left"></i> Lean Left</div>
+                <div id="option-a-text" class="text-3xl font-bold text-center px-4 z-10">Option A</div>
+            </div>
+
+            <!-- Center Hint -->
+            <div class="w-1/3 flex justify-center items-center opacity-50">
+                <div class="text-center">
+                    <i class="fa-solid fa-child-reaching text-4xl mb-2"></i>
+                    <p class="text-sm font-bold tracking-widest uppercase">Hold position to select</p>
+                </div>
+            </div>
+
+            <!-- Right Zone -->
+            <div class="relative w-1/3 h-full glass-panel rounded-2xl border-r-8 border-emerald-500 flex flex-col justify-center items-center overflow-hidden">
+                <div id="right-fill" class="fill-overlay" style="height: 0%; background: rgba(16, 185, 129, 0.3);"></div>
+                <div class="text-emerald-400 font-bold mb-2 uppercase tracking-widest">Lean Right <i class="fa-solid fa-arrow-right"></i></div>
+                <div id="option-b-text" class="text-3xl font-bold text-center px-4 z-10">Option B</div>
+            </div>
+        </div>
+
+        <!-- Overlays (Start / Game Over / Message) -->
+        <div id="modal-overlay" class="absolute inset-0 bg-slate-900/90 flex flex-col items-center justify-center z-50 p-6 pointer-events-auto backdrop-blur-md">
+            <div class="glass-panel p-10 rounded-3xl max-w-2xl text-center shadow-2xl border-t-4 border-blue-500">
+                <h1 class="text-6xl font-black mb-4 bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-emerald-400">
+                    Mind & Motion Academy
+                </h1>
+                <p class="text-xl text-slate-300 mb-8 leading-relaxed">
+                    Master <span class="text-blue-400 font-bold">Computer Science</span>, refine your <span class="text-emerald-400 font-bold">English</span>, and engage in <span class="text-rose-400 font-bold">Physical Education</span>.
+                    <br><br>
+                    <strong>How to play:</strong> Stand back so your camera can see you. Physically lean your body Left or Right to select the correct answers!
+                </p>
+                <div id="loading-status" class="text-yellow-400 font-bold mb-6 animate-pulse">
+                    <i class="fa-solid fa-spinner fa-spin"></i> Loading AI Models & Camera...
+                </div>
+                <button id="start-btn" class="hidden interactive-btn bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-bold py-4 px-12 rounded-full text-2xl shadow-lg border-2 border-indigo-400">
+                    START LEARNING
+                </button>
+            </div>
+        </div>
+        
+        <!-- Feedback Overlay (Correct/Wrong) -->
+        <div id="feedback-overlay" class="absolute inset-0 z-40 hidden flex items-center justify-center bg-black/60 backdrop-blur-sm transition-opacity duration-300">
+            <div id="feedback-text" class="text-7xl font-black drop-shadow-[0_0_20px_rgba(255,255,255,0.8)] scale-50 transition-transform duration-300">
+                CORRECT!
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- Curriculum Database ---
+        const curriculum = [
+            // Computer Science Questions
+            { subject: 'CS', text: "What does HTML stand for?", optA: "Hyper Text Markup Language", optB: "High Tech Machine Learning", correct: 'A' },
+            { subject: 'CS', text: "Which defines styling on a webpage?", optA: "JavaScript", optB: "CSS", correct: 'B' },
+            { subject: 'CS', text: "What is a 'Boolean'?", optA: "True or False value", optB: "A type of loop", correct: 'A' },
+            { subject: 'CS', text: "What runs code repeatedly?", optA: "A Loop", optB: "An Array", correct: 'A' },
+            { subject: 'CS', text: "Which is a frontend framework?", optA: "React", optB: "PostgreSQL", correct: 'A' },
+            
+            // English Questions
+            { subject: 'EN', text: "Identify the VERB in this sentence: 'The cat jumped over the wall.'", optA: "cat", optB: "jumped", correct: 'B' },
+            { subject: 'EN', text: "What is the antonym of 'Expand'?", optA: "Shrink", optB: "Grow", correct: 'A' },
+            { subject: 'EN', text: "Which spelling is correct?", optA: "Accommodate", optB: "Acommodate", correct: 'A' },
+            { subject: 'EN', text: "Identify the ADJECTIVE: 'She wore a beautiful dress.'", optA: "beautiful", optB: "wore", correct: 'A' },
+            { subject: 'EN', text: "A word that sounds the same but has different meaning is a...", optA: "Homophone", optB: "Synonym", correct: 'A' },
+            
+            // P.E. / Health Questions
+            { subject: 'PE', text: "Which activity builds cardiovascular endurance?", optA: "Sprinting", optB: "Distance Running", correct: 'B' },
+            { subject: 'PE', text: "What muscle group are you working during a squat?", optA: "Quadriceps & Glutes", optB: "Biceps & Triceps", correct: 'A' },
+            { subject: 'PE', text: "Dynamic stretching is best done...", optA: "Before a workout", optB: "Before sleeping", correct: 'A' },
+            { subject: 'PE', text: "What is a normal resting heart rate for adults?", optA: "60-100 BPM", optB: "120-160 BPM", correct: 'A' },
+            { subject: 'PE', text: "Which is a macronutrient?", optA: "Protein", optB: "Vitamin C", correct: 'A' }
+        ];
+
+        // --- Game State ---
+        let state = {
+            score: 0,
+            lives: 3,
+            isPlaying: false,
+            currentQuestion: null,
+            holdProgressA: 0,
+            holdProgressB: 0,
+            holdThreshold: 60, // frames to hold position (~1 second)
+            canAnswer: false
+        };
+
+        // --- DOM Elements ---
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('game-canvas');
+        const ctx = canvas.getContext('2d');
+        const modalOverlay = document.getElementById('modal-overlay');
+        const startBtn = document.getElementById('start-btn');
+        const loadingStatus = document.getElementById('loading-status');
+        const questionContainer = document.getElementById('question-container');
+        const answerZones = document.getElementById('answer-zones');
+        const subjectIndicator = document.getElementById('subject-indicator');
+        
+        let detector;
+
+        async function setupCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: 1280, height: 720 },
+                    audio: false
+                });
+                video.srcObject = stream;
+                return new Promise((resolve) => {
+                    video.onloadedmetadata = () => {
+                        resolve(video);
+                    };
+                });
+            } catch (err) {
+                loadingStatus.innerHTML = `<i class="fa-solid fa-triangle-exclamation"></i> Camera Access Denied. Please allow webcam access.`;
+                loadingStatus.className = "text-red-400 font-bold mb-6";
+                throw err;
+            }
+        }
+
+        async function loadAI() {
+            await setupCamera();
+            video.play();
+
+            // Match canvas size to video feed
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+
+            // Load MoveNet model for fast, browser-based skeletal tracking
+            detector = await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet, {
+                modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING
+            });
+
+            // AI Ready, update UI
+            loadingStatus.style.display = 'none';
+            startBtn.classList.remove('hidden');
+        }
+
+        function startGame() {
+            modalOverlay.classList.add('hidden');
+            questionContainer.classList.remove('hidden');
+            answerZones.classList.remove('hidden');
+            subjectIndicator.classList.remove('hidden');
+            
+            state.score = 0;
+            state.lives = 3;
+            state.isPlaying = true;
+            updateHUD();
+            nextQuestion();
+            
+            // Start the render loop
+            requestAnimationFrame(gameLoop);
+        }
+
+        function nextQuestion() {
+            // Pick a random question
+            const qIndex = Math.floor(Math.random() * curriculum.length);
+            state.currentQuestion = curriculum[qIndex];
+            
+            // Update UI Text
+            document.getElementById('question-text').innerText = state.currentQuestion.text;
+            document.getElementById('option-a-text').innerText = state.currentQuestion.optA;
+            document.getElementById('option-b-text').innerText = state.currentQuestion.optB;
+            
+            // Update Subject Badge styling
+            let subText = "";
+            let bgClass = "";
+            if (state.currentQuestion.subject === 'CS') { subText = "COMPUTER SCIENCE"; bgClass = "bg-blue-600"; }
+            else if (state.currentQuestion.subject === 'EN') { subText = "ENGLISH ELA"; bgClass = "bg-emerald-600"; }
+            else if (state.currentQuestion.subject === 'PE') { subText = "HEALTH & P.E."; bgClass = "bg-rose-600"; }
+            
+            subjectIndicator.innerText = subText;
+            subjectIndicator.className = `glass-panel px-6 py-3 rounded-full text-xl font-bold tracking-wider ${bgClass}`;
+
+            // Reset interaction state
+            state.holdProgressA = 0;
+            state.holdProgressB = 0;
+            updateFills();
+            
+            // Prevent immediate accidental selection
+            state.canAnswer = false;
+            setTimeout(() => { state.canAnswer = true; }, 1000);
+        }
+
+        function updateHUD() {
+            document.getElementById('score-display').innerText = state.score;
+            document.getElementById('lives-display').innerText = state.lives;
+        }
+
+        function updateFills() {
+            const percA = Math.min((state.holdProgressA / state.holdThreshold) * 100, 100);
+            const percB = Math.min((state.holdProgressB / state.holdThreshold) * 100, 100);
+            document.getElementById('left-fill').style.height = `${percA}%`;
+            document.getElementById('right-fill').style.height = `${percB}%`;
+        }
+
+        function showFeedback(isCorrect) {
+            const overlay = document.getElementById('feedback-overlay');
+            const txt = document.getElementById('feedback-text');
+            
+            overlay.classList.remove('hidden');
+            
+            if (isCorrect) {
+                txt.innerText = "CORRECT!";
+                txt.className = "text-7xl font-black text-emerald-400 drop-shadow-[0_0_30px_rgba(16,185,129,0.8)] scale-110 transition-transform duration-300";
+                state.score += 100;
+            } else {
+                txt.innerText = "INCORRECT!";
+                txt.className = "text-7xl font-black text-rose-500 drop-shadow-[0_0_30px_rgba(244,63,94,0.8)] scale-110 transition-transform duration-300";
+                state.lives -= 1;
+            }
+            
+            updateHUD();
+
+            setTimeout(() => {
+                overlay.classList.add('hidden');
+                txt.classList.replace('scale-110', 'scale-50');
+                
+                if (state.lives <= 0) {
+                    gameOver();
+                } else {
+                    nextQuestion();
+                }
+            }, 1500);
+        }
+
+        function gameOver() {
+            state.isPlaying = false;
+            questionContainer.classList.add('hidden');
+            answerZones.classList.add('hidden');
+            subjectIndicator.classList.add('hidden');
+            
+            modalOverlay.classList.remove('hidden');
+            modalOverlay.innerHTML = `
+                <div class="glass-panel p-10 rounded-3xl max-w-2xl text-center shadow-2xl border-t-4 border-rose-500">
+                    <h1 class="text-6xl font-black mb-4 text-rose-500">Game Over</h1>
+                    <p class="text-3xl text-white mb-6">Final Score: <span class="text-yellow-400 font-bold">${state.score}</span></p>
+                    <p class="text-lg text-slate-300 mb-8">Great job exercising your mind and body!</p>
+                    <button onclick="location.reload()" class="interactive-btn bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-bold py-4 px-12 rounded-full text-2xl shadow-lg">
+                        PLAY AGAIN
+                    </button>
+                </div>
+            `;
+        }
+
+        async function gameLoop() {
+            if (!state.isPlaying) return;
+
+            // 1. Draw webcam frame onto canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.
